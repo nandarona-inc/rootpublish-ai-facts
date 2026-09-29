@@ -1,0 +1,23 @@
+{
+  "name": "rootpublish",
+  "owner": {
+    "name": "Nandarona Inc. / Rootpublish",
+    "email": "support@rootpublish.com"
+  },
+  "metadata": {
+    "description": "Rootpublish plugins for Claude: check what AI assistants tell buyers about your company.",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "rootpublish-ai-facts",
+      "description": "Check what AI assistants tell buyers about your company (plans, prices, contract terms, what is included) against your own pricing and service pages. Runs on your own Claude; no API key.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Nandarona Inc. / Rootpublish"
+      },
+      "homepage": "https://rootpublish.com/ai-facts",
+      "source": "./rootpublish-ai-facts"
+    }
+  ]
+}
