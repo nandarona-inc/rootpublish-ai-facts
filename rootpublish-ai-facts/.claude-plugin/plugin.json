@@ -1,6 +1,6 @@
 {
   "name": "rootpublish-ai-facts",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Check what an AI assistant tells buyers about your company (plans, prices, contract terms, what is included) against your own pricing and service pages, and see where wrong facts come from. Runs on your own Claude; no API key.",
   "author": {
     "name": "Nandarona Inc. / Rootpublish",

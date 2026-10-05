@@ -19400,11 +19400,35 @@ var entities = {
   lt: "<",
   gt: ">",
   quot: '"',
-  "#39": "'",
-  "#039": "'",
-  nbsp: " "
+  apos: "'",
+  nbsp: " ",
+  ndash: "–",
+  mdash: "—",
+  hellip: "…",
+  lsquo: "‘",
+  rsquo: "’",
+  ldquo: "“",
+  rdquo: "”",
+  laquo: "«",
+  raquo: "»",
+  middot: "·",
+  bull: "•",
+  times: "×",
+  euro: "€",
+  yen: "¥",
+  pound: "£",
+  cent: "¢",
+  copy: "©",
+  reg: "®",
+  trade: "™"
 };
-var decode3 = (value) => value.replace(/&(amp|lt|gt|quot|#0?39|nbsp);/g, (_m, e) => entities[e]);
+var decode3 = (value) => value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+  if (e[0] === "#") {
+    const code = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : Number(e.slice(1));
+    return code > 0 && code <= 1114111 ? String.fromCodePoint(code) : m;
+  }
+  return entities[e] ?? m;
+});
 var squash = (value) => value.replace(/\s+/g, " ").trim();
 var BLOCK = /<(?:p|li|h[1-6]|dd|dt|div|section|br|summary|tr|blockquote)\b[^>]*>/gi;
 function pageText(html) {
@@ -19758,7 +19782,7 @@ ${a.cited.length ? `<p class="src">${t("引用したページ：", "Pages cited:
 }
 
 // scripts/ai-facts-mcp.ts
-var SERVER = { name: "rootpublish-ai-facts", version: "0.2.0" };
+var SERVER = { name: "rootpublish-ai-facts", version: "0.2.1" };
 var MAX_SOURCES = 10;
 var bare = (host) => host.replace(/^www\./, "");
 function siteName(html, host) {
@@ -19978,7 +20002,7 @@ var TOOLS = [
     }
   }
 ];
-async function handle(message, checks3) {
+async function rpc(message, server) {
   const reply = (result) => ({ jsonrpc: "2.0", id: message.id ?? null, result });
   const isRequest = message.id !== undefined && message.id !== null;
   switch (message.method) {
@@ -19986,17 +20010,17 @@ async function handle(message, checks3) {
       return reply({
         protocolVersion: typeof message.params?.protocolVersion === "string" ? message.params.protocolVersion : "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: SERVER,
-        instructions: "Checks what AI assistants tell buyers about a company against the company's own pages. Use the ai-facts-check skill: start_check, then one buyer agent per question, then record_answers, then one fact-judge agent per answer, then finish_check."
+        serverInfo: server.info,
+        instructions: server.instructions
       });
     case "ping":
       return reply({});
     case "tools/list":
-      return reply({ tools: TOOLS });
+      return reply({ tools: server.list });
     case "tools/call": {
       const name = message.params?.name;
       const args = message.params?.arguments ?? {};
-      const tool = typeof name === "string" && Object.hasOwn(checks3, name) ? checks3[name] : null;
+      const tool = typeof name === "string" && Object.hasOwn(server.tools, name) ? server.tools[name] : null;
       if (!tool)
         return { jsonrpc: "2.0", id: message.id ?? null, error: { code: -32602, message: `Unknown tool: ${String(name)}` } };
       try {
@@ -20009,6 +20033,14 @@ async function handle(message, checks3) {
     default:
       return isRequest ? { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } } : null;
   }
+}
+function handle(message, checks3) {
+  return rpc(message, {
+    info: SERVER,
+    instructions: "Checks what AI assistants tell buyers about a company against the company's own pages. Use the ai-facts-check skill: start_check, then one buyer agent per question, then record_answers, then one fact-judge agent per answer, then finish_check.",
+    tools: checks3,
+    list: TOOLS
+  });
 }
 function serve(checks3, input2 = process.stdin, output2 = process.stdout) {
   let buffer = "";
@@ -20043,7 +20075,8 @@ function serve(checks3, input2 = process.stdin, output2 = process.stdout) {
 
 // scripts/polite-fetch.ts
 var UA = "RootpublishAudit/0.2 (+https://rootpublish.com/)";
-function politeFetcher() {
+var MAX_PAGE = 2000000;
+function politeFetcher(allow) {
   const last = new Map;
   const rules = new Map;
   const wait = async (host) => {
@@ -20055,7 +20088,7 @@ function politeFetcher() {
   return async (url2) => {
     if (!rules.has(url2.host)) {
       await wait(url2.host);
-      const robots = await fetch(new URL("/robots.txt", url2.origin), { headers: { "user-agent": UA } }).then((r) => r.ok ? r.text() : "").catch(() => "");
+      const robots = await fetch(new URL("/robots.txt", url2.origin), { headers: { "user-agent": UA }, redirect: allow ? "manual" : "follow" }).then((r) => r.ok ? r.text() : "").catch(() => "");
       const disallow = [];
       let everyone = false;
       for (const line of robots.split(`
@@ -20072,10 +20105,32 @@ function politeFetcher() {
     if (rules.get(url2.host).some((d) => url2.pathname.startsWith(d)))
       throw new Error(`robots.txt で取得が許可されていません: ${url2}`);
     await wait(url2.host);
-    const res = await fetch(url2, { headers: { "user-agent": UA }, redirect: "follow" });
-    if (!res.ok)
-      throw new Error(`${url2} を取得できませんでした（${res.status}）`);
-    return res.text();
+    if (!allow) {
+      const res = await fetch(url2, { headers: { "user-agent": UA }, redirect: "follow" });
+      if (!res.ok)
+        throw new Error(`${url2} を取得できませんでした（${res.status}）`);
+      return res.text();
+    }
+    let at = url2;
+    for (let hop = 0;hop <= 3; hop++) {
+      if (!allow(at))
+        throw new Error(`この取得先は読めません: ${at}`);
+      const res = await fetch(at, { headers: { "user-agent": UA }, redirect: "manual" });
+      const location = res.headers.get("location");
+      if (res.status >= 300 && res.status < 400 && location) {
+        at = new URL(location, at);
+        continue;
+      }
+      if (!res.ok)
+        throw new Error(`${at} を取得できませんでした（${res.status}）`);
+      const type = res.headers.get("content-type") ?? "";
+      if (type && !/^(text\/|application\/(xhtml\+)?xml)/i.test(type))
+        throw new Error(`テキストのページではありません: ${at}`);
+      if (Number(res.headers.get("content-length") ?? 0) > MAX_PAGE)
+        throw new Error(`ページが大きすぎます: ${at}`);
+      return (await res.text()).slice(0, MAX_PAGE);
+    }
+    throw new Error(`転送が多すぎます: ${url2}`);
   };
 }
 
