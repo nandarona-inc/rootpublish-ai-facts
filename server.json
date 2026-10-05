@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.rootpublish/ai-facts",
+  "title": "Rootpublish AI facts check",
+  "description": "Check what an AI assistant tells buyers about a company against the company's own pricing pages.",
+  "version": "0.1.0",
+  "websiteUrl": "https://rootpublish.com/ai-facts",
+  "repository": {
+    "url": "https://github.com/nandarona-inc/rootpublish-ai-facts",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://rootpublish.com/mcp"
+    }
+  ]
+}
