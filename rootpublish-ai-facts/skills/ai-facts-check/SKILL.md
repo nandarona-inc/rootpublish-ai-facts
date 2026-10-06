@@ -15,7 +15,7 @@ Follow them in order and pass every text on word for word.
 2. **Start.** Call `start_check` with `site` (and `company`, `offer`, `pages`, `depth` if given). Do not open, fetch or search the company's pages yourself at any point in this check.
 3. **Ask as buyers.** For each of the `questions`, launch one `rootpublish-ai-facts:buyer` agent, all in the same message so they run in parallel. Each agent's prompt is its question exactly, with nothing added: no instructions, no context, no mention of a check. Each agent starts fresh, so no answer sees another.
 4. **Record.** Call `record_answers` with the `checkId` and the agents' full answers in question order, unedited, including their links.
-5. **Judge.** For each of the `judgePrompts`, launch one `rootpublish-ai-facts:fact-judge` agent, all in the same message. Each agent's prompt is its judge prompt exactly.
+5. **Judge.** Launch `judges` `rootpublish-ai-facts:fact-judge` agents, one per answer, all in the same message. Each agent's prompt is only `checkId: <checkId>, answer: <n>`, with n from 1 in answer order. Each judge fetches its own prompt with `judge_prompt`; do not fetch or copy the prompts yourself.
 6. **Finish.** Call `finish_check` with the `checkId` and the judges' replies in the same order, unedited.
 7. **Report back** in the user's language:
    - the report path from `finish_check`;
@@ -28,7 +28,7 @@ Checks of the same site are kept side by side in `./rootpublish-ai-facts/`, and 
 
 ## Do not
 
-- Do not reword the questions, the answers, the judge prompts or the judgements, and do not add or remove differences yourself. `finish_check` keeps only the differences whose quotes are really in the answer and on the company's page.
+- Do not reword the questions, the answers or the judgements, and do not add or remove differences yourself. `finish_check` keeps only the differences whose quotes are really in the answer and on the company's page.
 - Do not promise that fixing a page changes what assistants say.
 - Do not send the report anywhere; it stays on this computer.
 
@@ -36,4 +36,4 @@ Checks of the same site are kept side by side in `./rootpublish-ai-facts/`, and 
 
 - `start_check` cannot read the site: ask for the exact address of the top page.
 - `record_answers` reads no statements: ask which pages state prices and terms, and start again with `pages`.
-- A judge's reply is not JSON: launch that judge once more with the same prompt. If it fails again, say so and stop.
+- A judge's reply is not JSON: launch that judge once more with the same line. If it fails again, say so and stop.
