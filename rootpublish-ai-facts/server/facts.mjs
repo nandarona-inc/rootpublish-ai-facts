@@ -17,8 +17,39 @@ var __export = (target, all) => {
 import { join as join2 } from "node:path";
 
 // scripts/ai-facts-mcp.ts
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+
+// shared/public-https-url.ts
+function publicHttpsUrl(value) {
+  if (typeof value !== "string" || !URL.canParse(value))
+    return null;
+  const url = new URL(value);
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || url.port && url.port !== "443" || url.username || url.password)
+    return null;
+  if (!host.includes(".") || host.endsWith(".") || /^[\d.]+$/.test(host) || host.startsWith("[") || host.includes(":"))
+    return null;
+  if (/(^|\.)(localhost|local|internal|intranet|lan|home|corp|test|invalid|example)$/.test(host))
+    return null;
+  return url;
+}
+function companyPagePaths(value, site) {
+  if (value === undefined)
+    return;
+  const message = `pages must be root-relative paths on the company's site, such as ["/pricing"].`;
+  if (!Array.isArray(value))
+    throw new Error(message);
+  return value.map((path) => {
+    if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\"))
+      throw new Error(message);
+    const url = new URL(path, site);
+    if (url.origin !== site.origin || url.username || url.password)
+      throw new Error(message);
+    return path;
+  });
+}
 
 // node_modules/zod/v4/classic/external.js
 var exports_external = {};
@@ -19533,7 +19564,9 @@ var ARTICLE_PATH = /\/(?:blog|column|columns|media|magazine|articles?|news|lab|k
 function priceScore(text) {
   const amounts = text.match(/[0-9０-９][0-9０-９,，.]*\s*(?:万|千)?\s*円/g)?.length ?? 0;
   const terms = text.match(/月額|初期費用|最低契約|契約期間|解約|プラン|税込|税別|税抜/g)?.length ?? 0;
-  return amounts + 3 * terms;
+  const currencies = text.match(/[$€£]\s*\d[\d,.]*|\b(?:USD|EUR|GBP)\s*\d[\d,.]*|\b\d[\d,.]*\s*(?:USD|EUR|GBP)\b/gi)?.length ?? 0;
+  const englishTerms = text.match(/\b(?:prices?|pricing|per\s+(?:month|year)|(?:setup|initial)\s+fees?|minimum\s+(?:term|contract|commitment)|contract\s+(?:term|length)|cancellations?|cancel|refunds?|(?:free|paid)\s+trials?|billed\s+(?:monthly|annually))\b|\/mo\b/gi)?.length ?? 0;
+  return amounts + currencies + 3 * (terms + englishTerms);
 }
 var NOT_CANONICAL = /contact|privacy|policy|terms|recruit|login|form|survey|download|お問い合わせ|資料|case|works|example|interview|voice|事例|news|お知らせ|staff|member/i;
 function candidateLinks(links, limit = 12) {
@@ -19718,6 +19751,37 @@ function figureSources(quote, pages) {
     return figures.every((f) => found.has(f));
   }).map((p) => p.url);
 }
+function pageCoverage(selection, unread, compared) {
+  const read = new Set(compared);
+  return { selection, unreadPages: [...new Set(unread)].filter((url2) => !read.has(url2)) };
+}
+function coverageWarning(coverage, lang) {
+  if (!coverage?.unreadPages.length)
+    return null;
+  return lang === "ja" ? "一部のページを取得できないか、照合する本文を取り出せませんでした。今回の結果は、読めた公開ページの記載だけとの照合です。違い0件でも、料金や契約条件の正しさを確認できたわけではありません。料金・契約条件のページを指定して再確認してください。" : "Some pages could not be fetched or had no readable text. This result compares only the text on pages we could read. Even with zero differences, prices and contract terms have not been confirmed as correct. Specify the pages that state your prices and terms and check again.";
+}
+var savedWebUrl = exports_external.string().url().refine((value) => /^https?:\/\//i.test(value));
+var savedResult = exports_external.object({
+  company: exports_external.string().min(1),
+  site: savedWebUrl,
+  lang: exports_external.enum(["ja", "en"]),
+  engine: exports_external.string().min(1),
+  askedAt: exports_external.iso.datetime(),
+  canonicalPages: exports_external.array(savedWebUrl).min(1),
+  statements: exports_external.number().int().positive(),
+  answers: exports_external.array(exports_external.object({
+    question: exports_external.string().min(1),
+    answer: exports_external.string().min(1),
+    cited: exports_external.array(exports_external.object({ url: savedWebUrl, own: exports_external.boolean() })),
+    findings: exports_external.array(fact.extend({ statementPage: savedWebUrl.nullable(), sources: exports_external.array(savedWebUrl) })),
+    dropped: exports_external.number().int().nonnegative()
+  })).min(1),
+  coverage: exports_external.object({ selection: exports_external.enum(["automatic", "specified"]), unreadPages: exports_external.array(savedWebUrl) }).optional()
+});
+function savedCheckResult(input2) {
+  const parsed = savedResult.safeParse(input2);
+  return parsed.success ? parsed.data : null;
+}
 function checkDifferences(r) {
   const seen = new Set;
   const out = [];
@@ -19755,6 +19819,7 @@ function canonicalStatements(pages) {
   return [...all.filter((s) => PRIORITY.test(s.text)), ...all.filter((s) => !PRIORITY.test(s.text))].filter((s) => s.text.length <= room && (room -= s.text.length) >= 0).map((s, i) => ({ id: `S${i + 1}`, ...s }));
 }
 var esc2 = (value) => value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+var webUrl = (value) => URL.canParse(value) && ["http:", "https:"].includes(new URL(value).protocol);
 var plain = (quote) => quote.replace(/\*\*|__|`/g, "").replace(/^\s*(?:[-*+]|\d+[.)]|#{1,6})\s+/, "");
 var emphasis = (text) => esc2(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
 function inline(text) {
@@ -19763,7 +19828,7 @@ function inline(text) {
   for (const m of text.matchAll(/\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()（）「」、。]+)/g)) {
     const url2 = m[2] ?? m[3];
     out.push(emphasis(text.slice(last, m.index)));
-    out.push(/^https?:\/\//.test(url2) ? `<a href="${esc2(url2)}">${emphasis(m[1] ?? url2)}</a>` : emphasis(m[0]));
+    out.push(webUrl(url2) ? `<a href="${esc2(url2)}">${emphasis(m[1] ?? url2)}</a>` : emphasis(m[0]));
     last = m.index + m[0].length;
   }
   out.push(emphasis(text.slice(last)));
@@ -19837,19 +19902,30 @@ function factsReportHtml(r, options = {}) {
   const canonical = new Set(r.canonicalPages.map(bareUrl));
   const differences = checkDifferences(r);
   const clear = differences.filter((f) => f.severity === "clear").length;
-  const link = (u) => `<a href="${esc2(u)}">${esc2(u)}</a>`;
+  const link = (u) => webUrl(u) ? `<a href="${esc2(u)}">${esc2(u)}</a>` : esc2(u);
+  const warning = coverageWarning(r.coverage, r.lang);
+  const coverage = warning ? `<aside class="coverage-warning" aria-label="${t("確認できなかったページ", "Unread pages")}"><h3>${t("確認できなかったページがあります", "Some pages could not be checked")}</h3><p>${esc2(warning)}</p><ul>${r.coverage.unreadPages.map((url2) => `<li>${link(url2)}</li>`).join("")}</ul></aside>` : "";
   const elsewhere = (f) => f.sources.filter((u) => !canonical.has(bareUrl(u)));
   const onOwnPages = (f) => f.sources.filter((u) => host(u) === host(r.site));
   const unstatedAll = r.answers.flatMap((a, question) => a.findings.filter((f) => f.kind === "unsupported").map((f) => ({ ...f, question })));
   const unstated = unstatedAll.filter((f) => !onOwnPages(f).length);
   const ownElsewhere = unstatedAll.filter((f) => onOwnPages(f).length);
   const date5 = (iso) => new Date(iso).toLocaleDateString(ja ? "ja-JP" : "en-US", { year: "numeric", month: "long", day: "numeric" });
-  const asked = (i) => r.answers.length > 1 ? `<p class="src">${t(`質問${i + 1}への回答`, `Answer to question ${i + 1}`)}</p>` : "";
-  const difference = (f, i) => `<section class="finding ${f.severity}"><h3><span class="no">${i + 1}</span>${f.severity === "clear" ? t("はっきりした違い", "Clear difference") : t("確認をおすすめする違い", "Worth checking")}</h3>
+  const asked = (i) => `<p class="src"><a href="#answer-${i + 1}">${t("回答全文を確認", "Read the full answer")}${r.answers.length > 1 ? t(`（質問${i + 1}）`, ` (question ${i + 1})`) : ""}</a></p>`;
+  const difference = (f, i) => `<section class="finding ${f.severity}" id="difference-${i + 1}" tabindex="-1"><h3><span class="no">${i + 1}</span>${f.severity === "clear" ? t("はっきりした違い", "Clear difference") : t("確認をおすすめする違い", "Worth checking")}</h3>
 <div class="pair"><div><h4>${t("AIの回答", "The assistant said")}</h4><blockquote>${esc2(plain(f.answerQuote))}</blockquote>${asked(f.question)}</div>
 <div><h4>${t("御社のページ", "Your page")}</h4><blockquote>${esc2(f.statementQuote)}</blockquote>${f.statementPage ? `<p class="src">${link(f.statementPage)}</p>` : ""}</div></div>
 <p>${esc2(f.reason)}</p>${elsewhere(f).length ? `<p class="src">${t("同じ数字があったページ：", "Pages carrying the same figure: ")}${elsewhere(f).map(link).join("<br>")}</p>` : ""}</section>`;
-  const stated = (f, pages = elsewhere(f)) => `<li><strong>${esc2(plain(f.answerQuote))}</strong>：${esc2(f.reason)}${pages.length ? `<br><span class="src">${t("同じ数字：", "Same figure on: ")}${pages.map(link).join("、")}</span>` : ""}</li>`;
+  const stated = (f, id, pages = elsewhere(f)) => `<li id="${id}" tabindex="-1"><strong>${esc2(plain(f.answerQuote))}</strong>：${esc2(f.reason)}${pages.length ? `<br><span class="src">${t("同じ数字：", "Same figure on: ")}${pages.map(link).join("、")}</span>` : ""}${asked(f.question)}</li>`;
+  const references = (question) => {
+    const links = [
+      ...differences.flatMap((f, i) => f.question === question ? [`<a href="#difference-${i + 1}">${t(`違い${i + 1}へ戻る`, `Back to difference ${i + 1}`)}</a>`] : []),
+      ...unstated.flatMap((f, i) => f.question === question ? [`<a href="#unstated-${i + 1}">${t(`記載のない事実${i + 1}へ戻る`, `Back to unstated fact ${i + 1}`)}</a>`] : []),
+      ...ownElsewhere.flatMap((f, i) => f.question === question ? [`<a href="#own-fact-${i + 1}">${t(`別ページの記載${i + 1}へ戻る`, `Back to figure on your page ${i + 1}`)}</a>`] : []),
+      `<a href="#report-summary">${t("概要へ戻る", "Back to summary")}</a>`
+    ];
+    return `<nav aria-label="${t(`質問${question + 1}の確認箇所`, `Findings for question ${question + 1}`)}" class="report-backlinks">${links.join("")}</nav>`;
+  };
   const quote = (f) => `<li>${t("御社のページ", "Your page")}「${esc2(f.statementQuote)}」 ← ${t("AIの回答", "the assistant")}「${esc2(plain(f.answerQuote))}」</li>`;
   const c = options.comparison;
   const comparison = c ? `<h2>${t("前回の確認との比較", "Since the last check")}</h2>
@@ -19859,31 +19935,47 @@ ${c.newNow.length ? `<h3>${t("新しく出た違い", "New this time")}</h3><ul>
 <p class="note">${t("回答は聞くたびに変わるため、出なかった違いが直ったとは限りません。何回か続けて出なければ、直った可能性が高くなります。", "Answers change from one question to the next, so a difference that did not come up is not necessarily fixed. If it stays away over several checks, it probably is.")}</p>` : "";
   const history = options.history?.length ? `<h2>${t("これまでの確認", "Checks so far")}</h2><table><tr><th>${t("日付", "Date")}</th><th>${t("違い", "Differences")}</th><th>${t("はっきりした違い", "Clear")}</th></tr>${options.history.map((h) => `<tr><td>${esc2(date5(h.askedAt))}</td><td>${h.differences}</td><td>${h.clear}</td></tr>`).join("")}</table>` : "";
   return `<!doctype html><html lang="${r.lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc2(r.company)} ${t("AIの回答チェック", "AI facts check")}</title><style>
-${REPORT_CSS}.answer{background:#f4f9fd;border-radius:8px;padding:12px 16px;font-size:14px}.answer h4{font-size:14px;color:#101b24;margin:14px 0 4px}.answer p,.answer ul,.answer ol,.answer table{margin:6px 0}</style></head><body>
+${REPORT_CSS}body{overflow-wrap:anywhere}a{color:#075985;text-underline-offset:3px}a:focus-visible,[tabindex="-1"]:focus-visible{outline:3px solid #075985;outline-offset:4px}[id]{scroll-margin-top:20px}
+.pair{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.pair>div{min-width:0}@media(max-width:640px){.pair{grid-template-columns:minmax(0,1fr)}}
+.report-nav,.report-backlinks{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.report-nav a,.report-backlinks a{display:inline-flex;align-items:center;box-sizing:border-box;min-height:44px;border:1px solid #cbdce9;border-radius:6px;padding:6px 12px;font-size:14px}.report-nav a{background:#fff}.report-backlinks{margin:12px 0}.src a[href^="#"]{display:inline-block;box-sizing:border-box;min-height:44px;padding:10px 0;word-break:normal}
+.answer{background:#f4f9fd;border-radius:8px;padding:12px 16px;font-size:14px;min-width:0}.answer h4{font-size:14px;color:#101b24;margin:14px 0 4px}.answer p,.answer ul,.answer ol,.answer table{margin:6px 0}.answer table{table-layout:fixed}
+.coverage-warning{background:#fff7ed;border:1px solid #f3b37c;border-radius:8px;padding:14px 16px;margin:12px 0;color:#713f12}.coverage-warning h3{margin:0 0 8px;font-size:16px}.coverage-warning p,.coverage-warning ul{margin:8px 0}
+@media print{.report-nav,.report-backlinks,.src a[href^="#"]{display:none}.pair{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}</style></head><body>
 <h1>${esc2(r.company)} ${t("AIの回答チェック", "AI facts check")}</h1>
 <p class="meta">${esc2(r.site)}／${esc2(date5(r.askedAt))}／${t("Web検索つきのClaude", esc2(r.engine))}</p>
-<section class="summary"><h2>${t("概要", "Summary")}</h2>
-<p>${t(`購入を検討する人がする${r.answers.length > 1 ? `${r.answers.length}つの質問を、それぞれ別のAIに聞き` : "質問をAIに聞き"}、回答を御社の料金ページ・サービスページ（${r.canonicalPages.length}ページ）と照らしました。御社のページと違う記載が<strong>${differences.length}件</strong>（うち、はっきりした違い${clear}件）、御社のページにない事実を言い切った記載が${unstated.length}件ありました。${ownElsewhere.length ? `ほかに、御社のページに同じ数字があった記載が${ownElsewhere.length}件あります。` : ""}`, `We asked ${r.answers.length === 1 ? "an AI assistant the question" : `${r.answers.length} fresh AI assistants the questions`} a buyer asks and compared the answers with your pricing and service pages (${r.canonicalPages.length}). They made <strong>${differences.length}</strong> statements that differ from your pages (${clear} clearly) and stated ${unstated.length} facts your pages do not.${ownElsewhere.length ? ` ${ownElsewhere.length} more had their figures on pages of yours.` : ""}`)}</p>
-<ol>${r.answers.map((a) => `<li>${esc2(a.question)}</li>`).join("")}</ol></section>
+<section class="summary" id="report-summary" tabindex="-1"><h2>${t("概要", "Summary")}</h2>
+${coverage}
+<p>${t(`購入を検討する人がする${r.answers.length > 1 ? `${r.answers.length}つの質問を、それぞれ別のAIに聞き` : "質問をAIに聞き"}、回答を御社の公開ページ（${r.canonicalPages.length}ページ）の記載と照らしました。御社のページと違う記載が<strong>${differences.length}件</strong>（うち、はっきりした違い${clear}件）、今回照らした記載にない事実を言い切った記載が${unstated.length}件ありました。${ownElsewhere.length ? `ほかに、御社のページに同じ数字があった記載が${ownElsewhere.length}件あります。` : ""}`, `We asked ${r.answers.length === 1 ? "an AI assistant the question" : `${r.answers.length} fresh AI assistants the questions`} a buyer asks and compared the answers with the text on ${r.canonicalPages.length} public ${r.canonicalPages.length === 1 ? "page" : "pages"} of yours. They made <strong>${differences.length}</strong> statements that differ from your pages (${clear} clearly) and stated ${unstated.length} ${unstated.length === 1 ? "fact" : "facts"} not in the compared text.${ownElsewhere.length ? ` ${ownElsewhere.length} more had their figures on pages of yours.` : ""}`)}</p>
+<nav aria-label="${t("レポート内の移動", "Report navigation")}" class="report-nav"><a href="#differences">${t("違いの一覧", "Differences")}</a><a href="#unstated">${t("記載のない事実", "Unstated facts")}</a><a href="#answers">${t("回答全文", "Full answers")}</a><a href="#sources">${t("照らしたページ", "Pages compared")}</a></nav>
+<ol>${r.answers.map((a, i) => `<li><a href="#answer-${i + 1}">${esc2(a.question)}</a></li>`).join("")}</ol></section>
+<section id="differences" tabindex="-1">
 <h2>${t("御社のページと違う記載", "Statements that differ from your pages")}</h2>
 ${differences.map(difference).join(`
 `) || `<p>${t("見つかりませんでした。", "None found.")}</p>`}
+</section>
 ${comparison}
-<h2>${t("御社のページにない事実", "Facts your pages do not state")}</h2>
-${unstated.length ? `<ul>${unstated.map((f) => stated(f)).join("")}</ul><p class="note">${t("ほかのページに書かれた正しい内容の場合もあります。", "Some may be correct and written on other pages.")}</p>` : `<p>${t("見つかりませんでした。", "None found.")}</p>`}
+<section id="unstated" tabindex="-1">
+<h2>${t("今回照らした記載にない事実", "Facts not stated in the compared text")}</h2>
+${unstated.length ? `<ul>${unstated.map((f, i) => stated(f, `unstated-${i + 1}`)).join("")}</ul><p class="note">${t("ほかのページに書かれた正しい内容の場合もあります。", "Some may be correct and written on other pages.")}</p>` : `<p>${t("見つかりませんでした。", "None found.")}</p>`}
+</section>
 ${ownElsewhere.length ? `<h2>${t("御社のページに同じ数字があった記載", "Facts whose figures are on your pages")}</h2>
 <p>${t("AIが言った数字が、御社のページにありました。今回照らした記載には入っていなかったものです。そのページが今の内容と合っているかを確かめてください。", "The assistant's figures are on pages of yours, outside the statements this check compared. Check that those pages are current.")}</p>
-<ul>${ownElsewhere.map((f) => stated(f, onOwnPages(f))).join("")}</ul>` : ""}
-<h2>${t("直し方", "How to fix it")}</h2><ol>
+<ul>${ownElsewhere.map((f, i) => stated(f, `own-fact-${i + 1}`, onOwnPages(f))).join("")}</ul>` : ""}
+${differences.length ? `<h2>${t("直し方", "How to fix it")}</h2><ol>
 <li>${t("料金ページと食い違う古い記事やページを直します。", "Correct old articles and pages that contradict your pricing page.")}</li>
 <li>${t("料金・契約・範囲をはっきり答えるページを、自社サイトに置きます。", "Publish pages that state your prices, terms and scope plainly.")}</li>
-<li>${t("しばらくしてから、もう一度このチェックをして、答えが変わったかを確かめます。", "Run this check again after a while and see whether the answers changed.")}</li></ol>
+<li>${t("しばらくしてから、もう一度このチェックをして、答えが変わったかを確かめます。", "Run this check again after a while and see whether the answers changed.")}</li></ol>` : `<h2>${t("次に確認すること", "What to check next")}</h2><ol>
+${warning ? `<li>${t("確認できなかったページを読み直せるか確かめ、料金・契約条件のページを指定して再確認します。", "Check whether the unread pages are accessible, then specify your pricing and contract pages and run the check again.")}</li>` : ""}
+<li>${t("回答全文と照らしたページを確認し、質問に必要な記載が照合に入っているか確かめます。", "Read the full answer and the pages compared, and check whether they cover the statements needed for the question.")}</li>
+<li>${t("必要な記載が別のページにある場合は、そのページを指定して再確認します。", "If the needed statements are on other pages, specify those pages and check again.")}</li></ol>`}
 ${history}
-${r.answers.map((a, i) => `<h2>${r.answers.length > 1 ? t(`質問${i + 1}と回答の全文`, `Question ${i + 1} and the full answer`) : t("回答の全文", "The full answer")}</h2>
+<section id="answers" tabindex="-1">
+${r.answers.map((a, i) => `<section id="answer-${i + 1}" tabindex="-1"><h2>${r.answers.length > 1 ? t(`質問${i + 1}と回答の全文`, `Question ${i + 1} and the full answer`) : t("回答の全文", "The full answer")}</h2>
 <p><strong>${esc2(a.question)}</strong></p><div class="answer">${answerHtml(a.answer)}</div>
-${a.cited.length ? `<p class="src">${t("引用したページ：", "Pages cited: ")}${a.cited.map((c2) => `${link(c2.url)}${c2.own ? "" : t("（他社のサイト）", " (another site)")}`).join("<br>")}</p>` : ""}`).join(`
+${a.cited.length ? `<p class="src">${t("引用したページ：", "Pages cited: ")}${a.cited.map((c2) => `${link(c2.url)}${c2.own ? "" : t("（他社のサイト）", " (another site)")}`).join("<br>")}</p>` : ""}${references(i)}</section>`).join(`
 `)}
-<h2>${t("照らしたページ", "Pages compared")}</h2><ul>${r.canonicalPages.map((u) => `<li>${link(u)}</li>`).join("")}</ul>
+</section>
+<section id="sources" tabindex="-1"><h2>${t("照らしたページ", "Pages compared")}</h2><ul>${r.canonicalPages.map((u) => `<li>${link(u)}</li>`).join("")}</ul></section>
 <h2>${t("方法と限界", "Method and limits")}</h2><ul class="note">
 <li>${t("AIの回答は聞くたびに変わり、別のAIでは違う答えになることがあります。この結果は、この日のこれらの質問への答えです。", "Answers change from one question to the next, and other assistants may answer differently. This is the answer to these questions on this day.")}</li>
 <li>${t("違いの判定はAIが行い、引用が回答と御社のページに実際にあるものだけを残しています。直す前に、根拠のページで確かめてください。", "Differences are judged by an AI model; only those whose quotes are really in the answer and on your page are kept. Check each against its page before changing anything.")}</li>
@@ -19891,7 +19983,7 @@ ${a.cited.length ? `<p class="src">${t("引用したページ：", "Pages cited:
 }
 
 // scripts/ai-facts-mcp.ts
-var SERVER = { name: "rootpublish-ai-facts", version: "0.3.0" };
+var SERVER = { name: "rootpublish-ai-facts", version: "0.3.1" };
 var MAX_SOURCES = 10;
 var bare = (host) => host.replace(/^www\./, "");
 function siteName(html, host) {
@@ -19913,14 +20005,23 @@ function earlierChecks(outRoot, host, current) {
     if (!existsSync(file2))
       continue;
     try {
-      const r = JSON.parse(readFileSync(file2, "utf8"));
-      if (Array.isArray(r.answers))
+      const report = statSync(join(outRoot, name, "report.html"));
+      if (!report.isFile() || report.size === 0)
+        continue;
+      const r = savedCheckResult(JSON.parse(readFileSync(file2, "utf8")));
+      const site = r && publicHttpsUrl(r.site);
+      if (r && site && bare(site.host) === bare(host))
         out.push(r);
     } catch {}
   }
   return out.sort((a, b) => a.askedAt.localeCompare(b.askedAt));
 }
-function createChecks(get, outRoot, now = () => new Date) {
+function createChecks(read, outRoot, now = () => new Date) {
+  const get = (url2) => {
+    if (!publicHttpsUrl(url2.toString()))
+      throw new Error("Only public https pages can be read.");
+    return read(url2);
+  };
   const checks3 = new Map;
   const find = (id) => {
     const check2 = typeof id === "string" ? checks3.get(id) : undefined;
@@ -19936,17 +20037,17 @@ function createChecks(get, outRoot, now = () => new Date) {
   async function start_check(args) {
     if (typeof args.site !== "string" || !URL.canParse(args.site))
       throw new Error("site must be a URL such as https://example.com");
-    const top = new URL(args.site);
-    if (top.protocol !== "https:")
-      throw new Error("site must use https.");
+    const top = publicHttpsUrl(args.site);
+    if (!top)
+      throw new Error("site must be a public https address such as https://example.com");
+    const pages = companyPagePaths(args.pages, top);
     const home = await get(top);
     const lang = pageLang(home);
     const company = typeof args.company === "string" && args.company.trim() ? args.company.trim() : siteName(home, top.host);
     const offer = typeof args.offer === "string" ? args.offer.trim() : "";
     const questions = buyerQuestions(company, bare(top.host), lang, offer, args.depth === "quick" ? "quick" : "full");
     const stamp = now().toISOString().replace(/[-:]/g, "").slice(0, 15);
-    const id = `${bare(top.host)}-${stamp}`;
-    const pages = Array.isArray(args.pages) ? args.pages.filter((p) => typeof p === "string" && p.startsWith("/")) : undefined;
+    const id = `${bare(top.host)}-${stamp}-${randomUUID()}`;
     checks3.set(id, { id, site: new URL(top.origin), top, home, company, lang, questions, dir: join(outRoot, id), pages });
     return {
       checkId: id,
@@ -19956,23 +20057,42 @@ function createChecks(get, outRoot, now = () => new Date) {
       next: "Launch one buyer agent per question, in parallel. Each gets its question, word for word, with nothing else. Do not look at the company's pages first. Then pass the full answers, in the same order, to record_answers."
     };
   }
+  const recordedReply = (check2, recorded) => ({
+    checkId: check2.id,
+    canonicalPages: [...recorded.canonicalPages],
+    statements: recorded.statements.length,
+    judges: recorded.answers.length,
+    coverage: { ...recorded.coverage, unreadPages: [...recorded.coverage.unreadPages] },
+    warning: coverageWarning(recorded.coverage, check2.lang),
+    next: `Launch ${recorded.answers.length} fact-judge agents, in parallel. Give each only the line "checkId: ${check2.id}, answer: <n>" with n from 1 to ${recorded.answers.length}. Then pass their JSON replies, in answer order, to finish_check.`
+  });
   async function record_answers(args) {
     const check2 = find(args.checkId);
-    const answers = texts(args.answers, check2.questions.length, "answers", 40);
-    check2.answers = answers;
-    check2.askedAt = now().toISOString();
+    const answers = [...texts(args.answers, check2.questions.length, "answers", 40)];
+    if (check2.recorded) {
+      if (!answers.every((answer, i) => answer === check2.recorded.answers[i]))
+        throw new Error("Answers are already recorded for this check. Start a new check for different answers.");
+      return recordedReply(check2, check2.recorded);
+    }
+    const askedAt = now().toISOString();
     let paths = check2.pages;
     const fetched = new Map;
+    const unread = [];
     if (!paths?.length) {
       const links = pageLinks(check2.home, check2.top);
       const scored = [];
       for (const path of candidateLinks(links, 8)) {
+        const url2 = new URL(path, check2.site);
         try {
-          const paragraphs = pageText(await get(new URL(path, check2.site))).paragraphs;
+          const paragraphs = pageText(await get(url2)).paragraphs;
+          if (!paragraphs.length)
+            throw new Error("No readable statements.");
           fetched.set(path, paragraphs);
           scored.push({ path, score: priceScore(paragraphs.join(`
 `)) });
-        } catch {}
+        } catch {
+          unread.push(url2.toString());
+        }
       }
       const priced = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).slice(0, 4).map((s) => s.path);
       const chosen = priced.length ? priced : scored.slice(0, 2).map((s) => s.path);
@@ -19983,13 +20103,21 @@ function createChecks(get, outRoot, now = () => new Date) {
     for (const path of [...new Set(paths)]) {
       const url2 = new URL(path, check2.site);
       try {
-        pages.push({ url: url2.toString(), paragraphs: fetched.get(path) ?? (path === check2.top.pathname ? pageText(check2.home).paragraphs : pageText(await get(url2)).paragraphs) });
-      } catch {}
+        const paragraphs = fetched.get(path) ?? (path === check2.top.pathname ? pageText(check2.home).paragraphs : pageText(await get(url2)).paragraphs);
+        if (!paragraphs.length)
+          throw new Error("No readable statements.");
+        pages.push({ url: url2.toString(), paragraphs });
+      } catch {
+        if (check2.pages?.length)
+          throw new Error(`Could not read the requested company page ${url2.origin}${url2.pathname}. Retry record_answers with the same answers, or start_check with the correct pages.`);
+        unread.push(url2.toString());
+      }
     }
-    check2.statements = canonicalStatements(pages);
-    check2.canonicalPages = pages.map((p) => p.url);
-    if (!check2.statements.length)
-      throw new Error(`No statements could be read from the company's pages. Pass pages, such as ["/pricing"], to start_check.`);
+    const statements = canonicalStatements(pages);
+    const canonicalPages = pages.map((p) => p.url);
+    const coverage = pageCoverage(check2.pages?.length ? "specified" : "automatic", unread, canonicalPages);
+    if (!statements.length)
+      throw new Error(`No statements could be read from the company's pages. Retry record_answers with the same answers if the failure was temporary; otherwise start_check with pages such as ["/pricing"].`);
     mkdirSync(check2.dir, { recursive: true });
     writeFileSync(join(check2.dir, "answers.txt"), check2.questions.map((q, i) => `${q}
 
@@ -19998,31 +20126,33 @@ ${answers[i]}
 ---
 
 `));
-    return {
-      checkId: check2.id,
-      canonicalPages: check2.canonicalPages,
-      statements: check2.statements.length,
-      judges: answers.length,
-      next: `Launch ${answers.length} fact-judge agents, in parallel. Give each only the line "checkId: ${check2.id}, answer: <n>" with n from 1 to ${answers.length}. Then pass their JSON replies, in answer order, to finish_check.`
-    };
+    check2.recorded = { answers, askedAt, canonicalPages, statements, coverage };
+    return recordedReply(check2, check2.recorded);
   }
   async function judge_prompt(args) {
     const check2 = find(args.checkId);
-    if (!check2.answers || !check2.statements)
-      throw new Error("Record the buyer agents' answers with record_answers first.");
+    const recorded = check2.recorded;
+    if (!recorded)
+      throw new Error("Record the buyer agents' answers successfully with record_answers first.");
     const n = Number(args.answer);
-    if (!Number.isInteger(n) || n < 1 || n > check2.answers.length)
-      throw new Error(`answer must be a number from 1 to ${check2.answers.length}.`);
-    return { prompt: judgePrompt(check2.company, check2.statements, check2.answers[n - 1], check2.lang) };
+    if (!Number.isInteger(n) || n < 1 || n > recorded.answers.length)
+      throw new Error(`answer must be a number from 1 to ${recorded.answers.length}.`);
+    return { prompt: judgePrompt(check2.company, recorded.statements, recorded.answers[n - 1], check2.lang) };
   }
   async function finish_check(args) {
     const check2 = find(args.checkId);
-    if (!check2.answers || !check2.statements)
-      throw new Error("Record the buyer agents' answers with record_answers first.");
-    const judgements = texts(args.judgements, check2.questions.length, "judgements");
-    const statements = check2.statements;
+    const recorded = check2.recorded;
+    if (!recorded)
+      throw new Error("Record the buyer agents' answers successfully with record_answers first.");
+    const judgements = [...texts(args.judgements, check2.questions.length, "judgements")];
+    if (check2.completed) {
+      if (!judgements.every((judgement2, i) => judgement2 === check2.completed.judgements[i]))
+        throw new Error("This check is already completed. Start a new check for different judgements.");
+      return structuredClone(check2.completed.reply);
+    }
+    const statements = recorded.statements;
     const answers = [];
-    for (const [i, answer] of check2.answers.entries()) {
+    for (const [i, answer] of recorded.answers.entries()) {
       const { findings, dropped } = groundedFacts(judgementJson(judgements[i]), statements, answer);
       const cited = citedUrls(answer).map((url2) => ({ url: url2, own: bare(new URL(url2).host) === bare(check2.site.host) }));
       const sources = [];
@@ -20050,10 +20180,11 @@ ${answers[i]}
       site: check2.site.origin,
       lang: check2.lang,
       engine: "Claude (Rootpublish plugin, buyer agents with web search)",
-      askedAt: check2.askedAt,
-      canonicalPages: check2.canonicalPages,
+      askedAt: recorded.askedAt,
+      canonicalPages: recorded.canonicalPages,
       statements: statements.length,
-      answers
+      answers,
+      coverage: recorded.coverage
     };
     const earlier = earlierChecks(outRoot, check2.site.host, check2.id);
     const comparison = earlier.length ? compareChecks(earlier.at(-1), result) : undefined;
@@ -20063,19 +20194,27 @@ ${answers[i]}
     };
     const history = earlier.length ? [...earlier, result].map(row) : undefined;
     mkdirSync(check2.dir, { recursive: true });
-    writeFileSync(join(check2.dir, "result.json"), JSON.stringify(result, null, 2) + `
+    const reportPath = join(check2.dir, "report.html");
+    const resultPath = join(check2.dir, "result.json");
+    writeFileSync(reportPath + ".tmp", factsReportHtml(result, { comparison, history }));
+    renameSync(reportPath + ".tmp", reportPath);
+    writeFileSync(resultPath + ".tmp", JSON.stringify(result, null, 2) + `
 `);
-    writeFileSync(join(check2.dir, "report.html"), factsReportHtml(result, { comparison, history }));
+    renameSync(resultPath + ".tmp", resultPath);
     const differences = checkDifferences(result);
-    return {
+    const reply = {
       report: join(check2.dir, "report.html"),
       differences: differences.length,
       clearDifferences: differences.filter((f) => f.severity === "clear").length,
       unstatedFacts: answers.reduce((n, a) => n + a.findings.filter((f) => f.kind === "unsupported").length, 0),
       droppedUngrounded: answers.reduce((n, a) => n + a.dropped, 0),
+      coverage: { ...recorded.coverage, unreadPages: [...recorded.coverage.unreadPages] },
+      warning: coverageWarning(recorded.coverage, check2.lang),
       top: differences.slice(0, 5).map((f) => ({ assistant: f.answerQuote, yourPage: f.statementQuote, page: f.statementPage, severity: f.severity, question: f.question + 1 })),
       sinceLastCheck: comparison ? { previousAt: comparison.previousAt, stillThere: comparison.stillThere.length, newNow: comparison.newNow.length, notSeenNow: comparison.notSeenNow.length } : null
     };
+    check2.completed = { judgements, reply };
+    return structuredClone(reply);
   }
   return { start_check, record_answers, judge_prompt, finish_check };
 }
@@ -20086,10 +20225,10 @@ var TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        site: { type: "string", description: "The company's site, e.g. https://example.com (a language section such as https://example.com/ja also works)" },
+        site: { type: "string", description: "The company's public HTTPS site, e.g. https://example.com (a language section such as https://example.com/ja also works); no credentials, private names or IP addresses" },
         company: { type: "string", description: "The company or product name buyers use; read from the site when omitted" },
         offer: { type: "string", description: "The product or service to ask about, when the company has several" },
-        pages: { type: "array", items: { type: "string" }, description: 'Paths of the pages that state prices and terms, e.g. ["/pricing", "/"]; chosen from the top page when omitted' },
+        pages: { type: "array", items: { type: "string" }, description: `Root-relative paths on this company's site, e.g. ["/pricing", "/"]; no URLs, // prefixes or backslashes. Chosen from the top page when omitted` },
         depth: { type: "string", enum: ["full", "quick"], description: "full asks three questions (default); quick asks one" }
       },
       required: ["site"]
@@ -20216,6 +20355,8 @@ function politeFetcher(allow) {
     last.set(host, Date.now());
   };
   return async (url2) => {
+    if (allow && !allow(url2))
+      throw new Error("この取得先は読めません。公開HTTPSアドレスを指定してください。");
     if (!rules.has(url2.host)) {
       await wait(url2.host);
       const robots = await fetch(new URL("/robots.txt", url2.origin), { headers: { "user-agent": UA }, redirect: allow ? "manual" : "follow" }).then((r) => r.ok ? r.text() : "").catch(() => "");
@@ -20244,7 +20385,7 @@ function politeFetcher(allow) {
     let at = url2;
     for (let hop = 0;hop <= 3; hop++) {
       if (!allow(at))
-        throw new Error(`この取得先は読めません: ${at}`);
+        throw new Error("この取得先は読めません。公開HTTPSアドレスを指定してください。");
       const res = await fetch(at, { headers: { "user-agent": UA }, redirect: "manual" });
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {
@@ -20266,4 +20407,4 @@ function politeFetcher(allow) {
 
 // scripts/ai-facts-mcp-main.ts
 var out = process.env.ROOTPUBLISH_AI_FACTS_DIR || join2(process.cwd(), "rootpublish-ai-facts");
-serve(createChecks(politeFetcher(), out));
+serve(createChecks(politeFetcher((url2) => publicHttpsUrl(url2.toString()) !== null), out));

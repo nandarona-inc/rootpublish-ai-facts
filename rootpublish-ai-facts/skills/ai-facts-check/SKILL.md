@@ -22,6 +22,7 @@ Follow them in order and pass every text on word for word.
    - how many statements differ from the company's pages, and up to three clear ones, each as "the assistant said … / your page says …";
    - if `sinceLastCheck` is present, how many differences are still there, new, or did not come up this time, and that one run without a difference does not prove it is fixed;
    - that answers change from one question to the next and differ between assistants, and that each difference should be checked against the page before anything is edited;
+   - if `coverage.unreadPages` is non-empty, the pages that could not be checked and the `warning` from `finish_check`, even with zero differences; do not say the site's prices or terms have been confirmed as correct;
    - if `record_answers` listed pages that do not state prices or terms, offer to run the check again with the right pricing pages in `pages`.
 
 Checks of the same site are kept side by side in `./rootpublish-ai-facts/`, and each new check is compared with the last one. Suggest running it again two to four weeks after the company fixes its pages.
@@ -34,6 +35,7 @@ Checks of the same site are kept side by side in `./rootpublish-ai-facts/`, and 
 
 ## When a step fails
 
-- `start_check` cannot read the site: ask for the exact address of the top page.
-- `record_answers` reads no statements: ask which pages state prices and terms, and start again with `pages`.
+- `start_check` cannot read the site: ask for the exact public HTTPS address of the top page. If `pages` is refused, ask for root-relative paths on that same site, such as `/pricing`; do not use another host or work around a refused address.
+- `record_answers` cannot read or save the statements: do not launch judges or call `finish_check`. If the failure is temporary, retry `record_answers` with the same `checkId` and the same full answers; do not ask the buyer agents again. If the pricing paths are wrong, ask which pages state prices and terms, and start again with `pages`.
+- `record_answers` says answers are already recorded: reuse the recorded answers and continue with judging. To check different answers, start a new check; do not replace the answers under the same `checkId`.
 - A judge's reply is not JSON: launch that judge once more with the same line. If it fails again, say so and stop.

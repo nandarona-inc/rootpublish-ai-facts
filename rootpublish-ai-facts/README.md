@@ -9,9 +9,13 @@ In September 2026 we asked an AI assistant with web search about 30 B2B companie
 - **Runs on your own Claude.** The buyer's question and the comparison are done by agents in your Claude session. There is no API key and nothing is sent to Rootpublish.
 - **The buyers answer first.** Each `buyer` agent has only web search and gets only its question. Your pages are read after they answer, so the answers are not nudged toward the right ones.
 - **Quotes are checked, not trusted.** The `fact-judge` agent, which cannot reach the web and fetches only its own prompt from the plugin's server, compares the answer with your pages. The plugin's server keeps a difference only when both quotes are really in the answer and on your page, then looks for the wrong figure on the pages the answer cited.
-- **Polite reading.** Public pages only, at most one request a second per site, following robots.txt.
+- **Polite reading.** Public HTTPS pages only, at most one request a second per site, following robots.txt. Private names, IP addresses, credentials and alternate ports are refused before any request; redirects follow the same address rules. Pricing page paths stay on the company's site.
 
-The report is written to `./rootpublish-ai-facts/<site>-<time>/report.html` (or under `ROOTPUBLISH_AI_FACTS_DIR`), with the full answers and the result as JSON. Run the check again after fixing your pages: each check of the same site is compared with the last one. Add `quick` to ask one question instead of three.
+The report is written to `./rootpublish-ai-facts/<site>-<time>-<id>/report.html` (or under `ROOTPUBLISH_AI_FACTS_DIR`), with the full answers and the result as JSON. Every check has its own folder, including checks started in the same second. Run the check again after fixing your pages: each check of the same site is compared with the last one. Add `quick` to ask one question instead of three.
+
+If reading the pages or saving the answers fails, judging stops. Every pricing page you specify must be readable; the plugin will not substitute company information when a requested pricing page is missing. Retry with the original buyer answers after resolving the failure. Once answers are recorded, repeating the recording keeps the same pages and date; checking different answers requires a new check.
+
+When pages are chosen automatically, the report lists any candidates that could not be checked. Its results apply to the text on the pages it actually compared. Zero differences do not confirm that unread pricing or contract pages are correct; specify those pages and check again.
 
 ## Use
 
